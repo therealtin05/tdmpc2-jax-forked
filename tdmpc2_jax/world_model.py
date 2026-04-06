@@ -16,6 +16,17 @@ from tdmpc2_jax.networks import Ensemble
 from tdmpc2_jax.common.util import symlog, two_hot_inv
 import tensorflow_probability.substrates.jax.distributions as tfd
 
+from brax.training.distribution import NormalTanhDistribution, _NormalDistribution
+class BoundedNormalTanhDistribution(NormalTanhDistribution):
+    def __init__(self, event_size, min_log_std=-10.0, max_log_std=2.0):
+        super().__init__(event_size)  # still sets up TanhBijector, param_size, etc.
+        self._min_log_std = min_log_std
+        self._max_log_std = max_log_std
+
+    def create_dist(self, parameters):
+        loc, log_std = jnp.split(parameters, 2, axis=-1)
+        log_std = self._min_log_std + 0.5 * (self._max_log_std - self._min_log_std) * (jnp.tanh(log_std) + 1)
+        return _NormalDistribution(loc=loc, scale=jnp.exp(log_std))
 
 class WorldModel(struct.PyTreeNode):
   # Models
@@ -68,7 +79,8 @@ class WorldModel(struct.PyTreeNode):
     dynamics_module = nn.Sequential([
         NormedLinear(latent_dim, activation=mish, dtype=dtype),
         NormedLinear(latent_dim, activation=mish, dtype=dtype),
-        NormedLinear(latent_dim, activation=None, dtype=dtype)
+        # NormedLinear(latent_dim, activation=None, dtype=dtype),
+        nn.Dense(latent_dim) ### DEBUG
     ])
     dynamics_model = TrainState.create(
         apply_fn=dynamics_module.apply,
@@ -255,39 +267,82 @@ class WorldModel(struct.PyTreeNode):
     )
     return reward, logits
 
+#   @partial(jax.jit, static_argnames=('deterministic',))
+#   def sample_actions(self,
+#                      z: jax.Array,
+#                      params: Dict,
+#                      deterministic: bool = False,
+#                      min_log_std: float = -10,
+#                      max_log_std: float = 2,
+#                      *,
+#                      key: PRNGKeyArray
+#                      ) -> Tuple[jax.Array, ...]:
+#     # Chunk the policy model output to get mean and logstd
+#     mean, log_std = jnp.split(
+#         self.policy_model.apply_fn({'params': params}, z).astype(jnp.float32), 2, axis=-1
+#     )
+#     log_std = min_log_std + 0.5 * \
+#         (max_log_std - min_log_std) * (jnp.tanh(log_std) + 1)
+
+#     action_dist = tfd.MultivariateNormalDiag(
+#         loc=mean, scale_diag=jnp.exp(log_std)
+#     )
+#     if deterministic:
+#       action = mean
+#     else:
+#       action = action_dist.sample(seed=key)
+#     log_probs = action_dist.log_prob(action)
+
+#     # Squash tanh
+#     log_probs -= jnp.sum(
+#         (2 * (jnp.log(2) - action - jax.nn.softplus(-2 * action))), axis=-1
+#     )
+#     mean = jnp.tanh(mean)
+#     action = jnp.tanh(action)
+#     return action, mean, log_std, log_probs
+
+
   @partial(jax.jit, static_argnames=('deterministic',))
   def sample_actions(self,
-                     z: jax.Array,
-                     params: Dict,
-                     deterministic: bool = False,
-                     min_log_std: float = -10,
-                     max_log_std: float = 2,
-                     *,
-                     key: PRNGKeyArray
-                     ) -> Tuple[jax.Array, ...]:
-    # Chunk the policy model output to get mean and logstd
-    mean, log_std = jnp.split(
-        self.policy_model.apply_fn({'params': params}, z).astype(jnp.float32), 2, axis=-1
-    )
-    log_std = min_log_std + 0.5 * \
-        (max_log_std - min_log_std) * (jnp.tanh(log_std) + 1)
+                    z: jax.Array,
+                    params: Dict,
+                    deterministic: bool = False,
+                    min_log_std: float = -10,
+                    max_log_std: float = 2,
+                    *,
+                    key: PRNGKeyArray
+                    ) -> Tuple[jax.Array, ...]:
+      dist_params = self.policy_model.apply_fn(
+            {'params': params}, z
+        ).astype(jnp.float32)
 
-    action_dist = tfd.MultivariateNormalDiag(
-        loc=mean, scale_diag=jnp.exp(log_std)
-    )
-    if deterministic:
-      action = mean
-    else:
-      action = action_dist.sample(seed=key)
-    log_probs = action_dist.log_prob(action)
+      action_dist = BoundedNormalTanhDistribution(
+            event_size=self.action_dim,
+            min_log_std=min_log_std,
+            max_log_std=max_log_std,
+      )
 
-    # Squash tanh
-    log_probs -= jnp.sum(
-        (2 * (jnp.log(2) - action - jax.nn.softplus(-2 * action))), axis=-1
-    )
-    mean = jnp.tanh(mean)
-    action = jnp.tanh(action)
-    return action, mean, log_std, log_probs
+      if deterministic:
+        # mode() returns tanh(mean) directly
+        action = action_dist.mode(dist_params)
+      else:
+        # sample_no_postprocessing gives pre-tanh sample u
+        u = action_dist.sample_no_postprocessing(dist_params, key)
+        action = action_dist.postprocess(u)      # tanh(u)
+        # log_prob expects pre-tanh u
+        log_probs = action_dist.log_prob(dist_params, u)
+
+      if deterministic:
+        # for deterministic, log_prob of mode — use arctanh to get pre-tanh mean
+        u = action_dist.inverse_postprocess(action)
+        log_probs = action_dist.log_prob(dist_params, u)
+
+      # extract log_std for logging (same formula as create_dist)
+      _, log_std_raw = jnp.split(dist_params, 2, axis=-1)
+      log_std = min_log_std + 0.5 * (max_log_std - min_log_std) * (jnp.tanh(log_std_raw) + 1)
+      mean = action_dist.mode(dist_params)
+
+      return action, mean, log_std, log_probs
 
   @jax.jit
   def Q(self, z: jax.Array, a: jax.Array, params: Dict, key: PRNGKeyArray

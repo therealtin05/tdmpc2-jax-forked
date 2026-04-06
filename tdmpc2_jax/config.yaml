@@ -4,7 +4,7 @@ hydra:
   run:
     dir: outputs/${hydra.job.name}/${now:%Y-%m-%d_%H-%M-%S}
 
-seed: 0
+seed: 4
 max_steps: 2_000_000
 buffer_size: 2_000_000
 save_interval_steps: 100000
@@ -26,8 +26,8 @@ encoder:
   tabulate: False
 
 world_model:
-  latent_dim: 512
-  value_dropout: 0.01
+  latent_dim: 64
+  value_dropout: 0.0
   num_value_nets: 5
   num_bins: 101
   symlog_min: -10
@@ -48,7 +48,7 @@ tdmpc2:
   num_elites: 64
   min_plan_std: 0.05
   max_plan_std: 2
-  temperature: 1.0
+  temperature: 0.5
   # Optimization
   batch_size: 256
   discount: 0.99

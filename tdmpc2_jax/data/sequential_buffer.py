@@ -4,7 +4,7 @@ from typing import *
 import jax
 from collections import deque
 from jaxtyping import PyTree
-
+import jax.numpy as jnp
 
 class SequentialReplayBuffer():
 
@@ -65,7 +65,8 @@ class SequentialReplayBuffer():
 
     if self.vectorized:
       def masked_set(x, y):
-        x[self.current_ind, mask] = y[mask]
+        x[self.current_ind] = np.where(mask[:, None], y, x[self.current_ind])
+        
       jax.tree.map(masked_set, self.data, data)
     else:
       jax.tree.map(

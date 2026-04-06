@@ -91,9 +91,10 @@ def train(cfg: dict):
           )
           for _ in range(encoder_config.num_encoder_layers-1)
       ] + [
-          NormedLinear(
-              model_config.latent_dim, activation=None, dtype=dtype
-          )
+          # NormedLinear(
+          #     model_config.latent_dim, activation=None, dtype=dtype
+          # )
+        nn.Dense(model_config.latent_dim,)
       ]
   )
 
@@ -211,6 +212,7 @@ def train(cfg: dict):
         action, plan = agent.act(
             observation,
             prev_plan=plan,
+            mpc=True,
             deterministic=False,
             train=True,
             key=action_key
@@ -231,7 +233,7 @@ def train(cfg: dict):
             ),
             mask=~done
         )
-      observation = next_observation
+      observation = next_observation  
 
       # Handle terminations/truncations
       done = np.logical_or(terminated, truncated)

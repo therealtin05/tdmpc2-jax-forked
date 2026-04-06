@@ -296,7 +296,7 @@ class TDMPC2(struct.PyTreeNode):
       consistency_loss = 0
       for t in range(self.horizon):
         z = self.model.next(
-            z=latent_zs[t], a=actions[t], params=dynamics_params
+            z=latent_zs[t], a=actions[t], params=dynamics_params    
         )
         consistency_loss += lam[t] * \
             jnp.mean((z - sg(next_zs[t]))**2, where=~finished[t][:, None])
@@ -472,7 +472,18 @@ class TDMPC2(struct.PyTreeNode):
         ),
         value_scale=policy_info['value_scale']
     )
-    info = {**model_info, **policy_info}
+
+    # Compute gradient norms for logging
+    grad_norms = {
+        'grad_norm/encoder': optax.global_norm(encoder_grads),
+        'grad_norm/dynamic': optax.global_norm(dynamics_grads),
+        'grad_norm/reward': optax.global_norm(reward_grads),
+        # 'grad_norm/termination': optax.global_norm(termination_gradients) if self._config.episodic else 0.0,
+        'grad_norm/critic': optax.global_norm(value_grads),
+        'grad_norm/policy': optax.global_norm(policy_grads),
+    }
+
+    info = {**model_info, **policy_info, **grad_norms}
 
     return new_agent, info
 
